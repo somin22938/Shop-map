@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>우리동네 상가정보</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    --bg: #f7f6f2; --panel: #ffffff; --ink: #1f2a2e; --sub: #6b777b; --line: #e2e0d8; --accent: #1b6b5a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161b1d; --panel: #1f2629; --ink: #e8eceb; --sub: #96a3a6; --line: #33403f; --accent: #5cc4aa; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif; background: var(--bg); color: var(--ink); display: flex; }
+  aside { width: 340px; max-width: 100%; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; z-index: 1000; }
+  header { padding: 20px 20px 14px; }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  header p { margin: 0; color: var(--sub); font-size: 13px; }
+  form { display: flex; gap: 6px; padding: 0 20px; }
+  input, select, button { font: inherit; color: inherit; }
+  input[type=text] { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+  button.go { padding: 10px 14px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .radius { display: flex; align-items: center; gap: 10px; padding: 12px 20px 8px; font-size: 13px; color: var(--sub); }
+  .radius input { flex: 1; accent-color: var(--accent); }
+  .radius b { color: var(--ink); min-width: 52px; text-align: right; }
+  #status { padding: 4px 20px 10px; font-size: 13px; color: var(--sub); min-height: 28px; }
+  #status.err { color: #c0392b; }
+  #total { padding: 0 20px 6px; font-size: 14px; }
+  #total strong { font-size: 26px; letter-spacing: -0.02em; }
+  #cats { list-style: none; margin: 0; padding: 0 12px 16px; overflow-y: auto; flex: 1; }
+  #cats li { display: grid; grid-template-columns: 12px 1fr auto; gap: 4px 10px; align-items: center; padding: 8px; border-radius: 8px; cursor: pointer; }
+  #cats li:hover { background: var(--bg); }
+  #cats li.off { opacity: .35; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .num { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .bar { grid-column: 2 / 4; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 3px; }
+  .hint { padding: 0 20px 12px; font-size: 12px; color: var(--sub); }
+  #map { flex: 1; min-width: 0; }
+  .leaflet-popup-content b { display: block; margin-bottom: 2px; }
+  .leaflet-popup-content span { color: #666; font-size: 12px; }
+  @media (max-width: 720px) {
+    body { flex-direction: column-reverse; }
+    aside { width: 100%; height: 46%; border-right: 0; border-top: 1px solid var(--line); }
+    #map { height: 54%; flex: none; }
+  }
+</style>
+</head>
+<body>
+<aside>
+  <header>
+    <h1>우리동네 상가정보</h1>
+    <p>주소를 검색하거나 지도를 눌러보세요.</p>
+  </header>
+  <form id="f">
+    <input id="q" type="text" placeholder="예: 서울 중구 세종대로 110" aria-label="주소 검색">
+    <button class="go" type="submit">검색</button>
+  </form>
+  <label class="radius">반경
+    <input id="r" type="range" min="100" max="1000" step="100" value="500">
+    <b id="rv">500m</b>
+  </label>
+  <div id="status" role="status">지도에서 원하는 곳을 눌러보세요.</div>
+  <div id="total" hidden>상가 <strong id="n">0</strong>곳</div>
+  <ul id="cats"></ul>
+  <div class="hint">업종을 누르면 지도에서 켜고 끌 수 있어요.</div>
+</aside>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const COLORS = {
+  '음식': '#e4572e', '소매': '#2e86de', '생활서비스': '#8e6bbf', '학문/교육': '#e0a100',
+  '의료': '#d6336c', '관광/여가/오락': '#17a589', '스포츠': '#5d8a3a', '숙박': '#8d6e63', '부동산': '#607d8b',
+};
+const colorOf = k => COLORS[k] || '#8a8f93';
+
+const map = L.map('map', { preferCanvas: true }).setView([37.5663, 126.9779], 16);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+  subdomains: 'abcd', maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+}).addTo(map);
+
+const $ = id => document.getElementById(id);
+const layer = L.layerGroup().addTo(map);
+let circle, pin, items = [], hidden = new Set(), center = null;
+
+const setStatus = (t, err) => { $('status').textContent = t; $('status').className = err ? 'err' : ''; };
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function api(path) {
+  const r = await fetch(path);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || '요청에 실패했어요.');
+  return j;
+}
+
+async function search(lat, lon, label) {
+  center = { lat, lon };
+  const radius = +$('r').value;
+  if (circle) map.removeLayer(circle);
+  if (pin) map.removeLayer(pin);
+  circle = L.circle([lat, lon], { radius, color: '#1b6b5a', weight: 2, fillOpacity: 0.05, interactive: false }).addTo(map);
+  pin = L.marker([lat, lon]).addTo(map);
+  map.fitBounds(circle.getBounds(), { padding: [20, 20] });
+  setStatus('상가를 불러오는 중…');
+  try {
+    const data = await api(`/api/stores?lat=${lat}&lon=${lon}&radius=${radius}`);
+    items = data.items;
+    hidden.clear();
+    render();
+    const more = data.total > items.length ? ` (전체 ${data.total.toLocaleString()}곳 중 ${items.length.toLocaleString()}곳만 표시)` : '';
+    setStatus((label ? label + ' 주변 ' : '') + radius + 'm 안의 상가예요.' + more);
+  } catch (e) {
+    items = []; render();
+    setStatus(e.message, true);
+  }
+}
+
+function render() {
+  layer.clearLayers();
+  const counts = {};
+  for (const s of items) counts[s.lcls] = (counts[s.lcls] || 0) + 1;
+
+  for (const s of items) {
+    if (hidden.has(s.lcls) || !isFinite(s.lat)) continue;
+    L.circleMarker([s.lat, s.lon], { radius: 5, color: '#fff', weight: 1, fillColor: colorOf(s.lcls), fillOpacity: 0.9 })
+      .bindPopup(`<b>${esc(s.name)}${s.branch ? ' ' + esc(s.branch) : ''}</b><span>${esc(s.lcls)} › ${esc(s.mcls)} › ${esc(s.scls)}<br>${esc(s.addr)}</span>`)
+      .addTo(layer);
+  }
+
+  $('total').hidden = !items.length;
+  $('n').textContent = items.length.toLocaleString();
+  const max = Math.max(1, ...Object.values(counts));
+  $('cats').innerHTML = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) =>
+    `<li data-k="${esc(k)}" class="${hidden.has(k) ? 'off' : ''}">
+       <span class="dot" style="background:${colorOf(k)}"></span><span>${esc(k)}</span><span class="num">${v.toLocaleString()}</span>
+       <span class="bar"><i style="width:${v / max * 100}%;background:${colorOf(k)}"></i></span>
+     </li>`).join('');
+}
+
+$('cats').addEventListener('click', e => {
+  const li = e.target.closest('li'); if (!li) return;
+  const k = li.dataset.k;
+  hidden.has(k) ? hidden.delete(k) : hidden.add(k);
+  render();
+});
+
+map.on('click', e => search(e.latlng.lat, e.latlng.lng));
+
+$('r').addEventListener('input', () => { $('rv').textContent = $('r').value + 'm'; });
+$('r').addEventListener('change', () => { if (center) search(center.lat, center.lon); });
+
+$('f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const q = $('q').value.trim(); if (!q) return;
+  setStatus('주소를 찾는 중…');
+  try {
+    const g = await api('/api/geocode?q=' + encodeURIComponent(q));
+    search(g.lat, g.lon, q);
+  } catch (err) { setStatus(err.message, true); }
+});
+</script>
+</body>
+</html>
